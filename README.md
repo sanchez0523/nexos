@@ -74,12 +74,9 @@ Point an ESP32, Raspberry Pi, or the bundled Go simulator at the broker. See
 
 ## Architecture
 
-```
- IoT device ── MQTT/TLS ─▶ Mosquitto ──▶ Go ingestion ──▶ TimescaleDB
-                                              │
-                                              ├── WebSocket ──▶ SvelteKit dashboard
-                                              └── Webhook dispatch ──▶ your alerting
-```
+<p align="center">
+  <img alt="Nexos architecture — data flow from IoT device through ingestion to dashboard and webhook" src="docs/img/architecture.svg" width="720" />
+</p>
 
 Five services total, coordinated by `docker compose`:
 
