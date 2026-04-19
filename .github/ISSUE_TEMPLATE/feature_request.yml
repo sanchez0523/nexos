@@ -1,0 +1,34 @@
+name: Feature request
+description: A new capability you'd like to see in Nexos.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What are you trying to do? What breaks without this feature?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behavior
+      description: High-level sketch; we'll refine together. No need to design the API upfront.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Invariant check
+      description: Please confirm this request doesn't break Nexos's architectural invariants.
+      options:
+        - label: Does NOT require server-side multi-tenancy
+          required: true
+        - label: Does NOT require device control (server → device commands)
+          required: true
+        - label: Does NOT require a Redis / Kafka / external queue service
+          required: true
+        - label: Does NOT require binary / Protobuf payloads
+          required: true

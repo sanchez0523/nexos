@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS alert_rules;
+DROP TABLE IF EXISTS metrics;
+DROP TABLE IF EXISTS devices;

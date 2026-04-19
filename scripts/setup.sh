@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# Nexos interactive setup.
+#
+# Produces everything `docker compose up -d` needs:
+#   - .env with generated secrets
+#   - broker/certs/{ca,server}.{crt,key}  (self-signed, 365-day)
+#   - broker/passwd  with the ingestion-worker + nexos-health accounts
+#
+# Idempotent: running again regenerates only what the user confirms.
+
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT_DIR"
+
+CERT_DIR="broker/certs"
+PASSWD_FILE="broker/passwd"
+ENV_FILE=".env"
+
+CERTS_ONLY=false
+for arg in "$@"; do
+  case "$arg" in
+    --certs-only) CERTS_ONLY=true ;;
+    -h|--help)
+      sed -n '2,12p' "$0"
+      exit 0
+      ;;
+  esac
+done
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
+ok()    { color "32" "✔ $*"; printf "\n"; }
+warn()  { color "33" "⚠ $*"; printf "\n"; }
+die()   { color "31" "✘ $*"; printf "\n" >&2; exit 1; }
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"
+}
+
+# Read a value with optional default. Echoes the chosen value.
+ask() {
+  local prompt="$1" default="${2:-}" var
+  if [ -n "$default" ]; then
+    read -r -p "$prompt [$default]: " var
+    printf "%s" "${var:-$default}"
+  else
+    read -r -p "$prompt: " var
+    printf "%s" "$var"
+  fi
+}
+
+ask_password() {
+  # Newlines go to stderr — otherwise command substitution captures them
+  # and prepends them to the password value in .env.
+  # `read` returns non-zero on EOF; we bail rather than spin forever.
+  local prompt="$1" var1 var2
+  while :; do
+    if ! read -r -s -p "$prompt: " var1; then
+      warn "password input closed (EOF)"; exit 1
+    fi
+    echo >&2
+    if ! read -r -s -p "$prompt (confirm): " var2; then
+      warn "password input closed (EOF)"; exit 1
+    fi
+    echo >&2
+    [ "$var1" = "$var2" ] && [ -n "$var1" ] && { printf "%s" "$var1"; return; }
+    warn "passwords don't match or empty, try again"
+  done
+}
+
+gen_secret() {
+  local bytes="${1:-32}"
+  # openssl is already a required dependency; using it keeps macOS+Linux portable.
+  openssl rand -base64 $((bytes * 2)) | tr -d '\n/+=' | head -c "$bytes"
+}
+
+# ── prerequisites ────────────────────────────────────────────────────────────
+require_cmd openssl
+require_cmd docker
+
+# mosquitto_passwd ships inside the eclipse-mosquitto image. We invoke it via
+# `docker run` so users don't need mosquitto installed on the host.
+MOSQ_PASSWD_CMD=(docker run --rm
+  -v "$ROOT_DIR/broker:/mosquitto"
+  eclipse-mosquitto:2
+  mosquitto_passwd)
+
+mkdir -p "$CERT_DIR"
+
+# ── TLS certificates ─────────────────────────────────────────────────────────
+need_certs=true
+if [ -f "$CERT_DIR/ca.crt" ] && [ -f "$CERT_DIR/server.crt" ] && [ -f "$CERT_DIR/server.key" ]; then
+  if [ "$CERTS_ONLY" = true ]; then
+    regen=$(ask "TLS certs already exist. Regenerate? (y/N)" "N")
+  else
+    regen=$(ask "TLS certs already exist. Regenerate? (y/N)" "N")
+  fi
+  [[ "$regen" =~ ^[Yy]$ ]] || need_certs=false
+fi
+
+if [ "$need_certs" = true ]; then
+  rm -f "$CERT_DIR/"*.crt "$CERT_DIR/"*.key "$CERT_DIR/"*.csr "$CERT_DIR/"*.srl
+
+  # CA
+  openssl genrsa -out "$CERT_DIR/ca.key" 4096 2>/dev/null
+  openssl req -x509 -new -nodes -key "$CERT_DIR/ca.key" -sha256 -days 3650 \
+    -subj "/CN=Nexos Local CA" \
+    -out "$CERT_DIR/ca.crt" 2>/dev/null
+
+  # Server — CN=broker matches the docker-compose service hostname used by
+  # the ingestion container. TLS clients from inside the Docker network hit
+  # `mqtts://broker:8883` and SNI resolves to this cert.
+  openssl genrsa -out "$CERT_DIR/server.key" 2048 2>/dev/null
+  openssl req -new -key "$CERT_DIR/server.key" \
+    -subj "/CN=broker" \
+    -out "$CERT_DIR/server.csr" 2>/dev/null
+
+  cat > "$CERT_DIR/server.ext" <<'EOF'
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = broker
+DNS.2 = localhost
+IP.1  = 127.0.0.1
+EOF
+  openssl x509 -req -in "$CERT_DIR/server.csr" \
+    -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
+    -out "$CERT_DIR/server.crt" -days 365 -sha256 \
+    -extfile "$CERT_DIR/server.ext" 2>/dev/null
+
+  rm -f "$CERT_DIR/server.csr" "$CERT_DIR/server.ext" "$CERT_DIR/ca.srl"
+  chmod 600 "$CERT_DIR/ca.key" "$CERT_DIR/server.key"
+  ok "TLS certs generated in $CERT_DIR/"
+fi
+
+[ "$CERTS_ONLY" = true ] && exit 0
+
+# ── .env ─────────────────────────────────────────────────────────────────────
+regen_env=true
+if [ -f "$ENV_FILE" ]; then
+  warn ".env already exists — reusing it (rerun after deleting if you want fresh secrets)"
+  regen_env=false
+fi
+
+if [ "$regen_env" = true ]; then
+  admin_user=$(ask "Admin username" "admin")
+  admin_pass=$(ask_password "Admin password")
+
+  ingestion_pass=$(gen_secret 24)
+  health_pass=$(gen_secret 24)
+  postgres_pass=$(gen_secret 24)
+  jwt_secret=$(gen_secret 48)
+
+  cat > "$ENV_FILE" <<EOF
+# Generated by scripts/setup.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ").
+# Do not commit this file.
+
+ADMIN_USERNAME=$admin_user
+ADMIN_PASSWORD=$admin_pass
+
+JWT_SECRET=$jwt_secret
+JWT_ACCESS_TTL=24h
+JWT_REFRESH_TTL=168h
+
+POSTGRES_PASSWORD=$postgres_pass
+
+MQTT_INGESTION_USER=ingestion-worker
+MQTT_INGESTION_PASS=$ingestion_pass
+
+MQTT_HEALTH_USER=nexos-health
+MQTT_HEALTH_PASS=$health_pass
+
+DATA_RETENTION_DAYS=90
+ALERT_TIMEOUT_SECONDS=60
+EOF
+  chmod 600 "$ENV_FILE"
+  ok ".env generated"
+fi
+
+# Re-read values we need for passwd setup.
+# shellcheck disable=SC1090
+set -a; source "$ENV_FILE"; set +a
+
+# ── Mosquitto passwd ─────────────────────────────────────────────────────────
+# Use a temp file so mosquitto_passwd can create+hash atomically, then move
+# it into place. mktemp creates the file; mosquitto_passwd -c refuses if it
+# already exists, so we reserve the name and delete the placeholder.
+TMP_PASSWD=$(mktemp "$ROOT_DIR/broker/passwd.XXXXXX")
+rm -f "$TMP_PASSWD"
+trap 'rm -f "$TMP_PASSWD"' EXIT
+
+# First user must be added with -c (create file).
+"${MOSQ_PASSWD_CMD[@]}" -b -c "/mosquitto/$(basename "$TMP_PASSWD")" \
+  "$MQTT_INGESTION_USER" "$MQTT_INGESTION_PASS"
+
+"${MOSQ_PASSWD_CMD[@]}" -b "/mosquitto/$(basename "$TMP_PASSWD")" \
+  "$MQTT_HEALTH_USER" "$MQTT_HEALTH_PASS"
+
+mv "$TMP_PASSWD" "$PASSWD_FILE"
+chmod 600 "$PASSWD_FILE"
+trap - EXIT
+ok "broker/passwd created with ingestion + health accounts"
+
+# ── done ─────────────────────────────────────────────────────────────────────
+cat <<EOF
+
+$(color 32 "Setup complete.") Next steps:
+
+  1. $(color 36 "docker compose up -d")
+  2. Open $(color 36 "https://localhost")  (accept the local CA warning)
+  3. Add a device account:
+       $(color 36 "./scripts/add-device.sh")
+  4. Point your device at $(color 36 "mqtts://<host>:8883") and publish to
+       $(color 36 "devices/<device_id>/<sensor>")
+     with payload $(color 36 '{"value": 23.5}')  (or a bare number).
+
+The self-signed CA cert your devices should trust lives at:
+  $(color 36 "$CERT_DIR/ca.crt")
+EOF

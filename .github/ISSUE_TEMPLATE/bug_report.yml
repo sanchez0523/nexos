@@ -1,0 +1,53 @@
+name: Bug report
+description: Something broke in a reproducible way.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Nexos version
+      description: git tag, release, or commit SHA
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - ingestion (Go)
+        - dashboard (SvelteKit)
+        - broker (Mosquitto config)
+        - scripts (setup / add-device)
+        - docs
+        - unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Include the commands you ran and the device you were publishing from.
+      placeholder: |
+        1. `./scripts/setup.sh`
+        2. `docker compose up -d`
+        3. Flashed examples/esp32 with `DEVICE_ID=esp32-living`
+        4. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: From `docker compose logs -f <service>`. Redact secrets before pasting.
+      render: text

@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (lint + test)
+    runs-on: ubuntu-latest
+    services:
+      # TimescaleDB is required for integration tests; unit tests skip it.
+      db:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_DB: nexos
+          POSTGRES_USER: nexos
+          POSTGRES_PASSWORD: nexos
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexos -d nexos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://nexos:nexos@localhost:5432/nexos?sslmode=disable
+
+    defaults:
+      run:
+        working-directory: ingestion
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          # go.sum is generated on first `go mod download`; setup-go caches
+          # based on go.mod when go.sum is absent.
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.60
+          working-directory: ingestion
+          args: --timeout=5m
+
+      - name: go test (race + coverage)
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: ingestion/coverage.out
+
+  dashboard:
+    name: Dashboard (svelte-check + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # `cache: npm` requires a committed package-lock.json; re-enable once
+          # the first CI run has produced one.
+
+      - name: install
+        run: npm install
+
+      - name: svelte-check
+        run: npx svelte-check --tsconfig ./tsconfig.json --threshold warning
+
+      - name: build
+        run: npm run build
+
+  examples:
+    name: Examples build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: build simulator
+        working-directory: examples/simulator
+        run: go build ./...
+
+  compose:
+    name: docker compose validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: syntax check
+        # No .env here, so docker compose config emits warnings about missing
+        # vars but succeeds — we only want a parse-level check.
+        run: docker compose config --quiet

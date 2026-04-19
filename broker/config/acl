@@ -1,0 +1,14 @@
+# Nexos MQTT ACL
+#
+# ingestion-worker: subscribe to all device topics + $SYS for healthcheck
+user ingestion-worker
+topic read devices/#
+topic read $SYS/#
+
+# health-check user: read $SYS only
+user nexos-health
+topic read $SYS/#
+
+# All other authenticated users (devices):
+# publish only to devices/{username}/# — prevents spoofing other device IDs
+pattern write devices/%u/#

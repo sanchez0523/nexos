@@ -1,0 +1,58 @@
+# golangci-lint v1 config. Kept on v1 until golangci-lint-action@v7 is widely
+# adopted — v1.60+ is the stable surface the CI action installs today.
+
+linters:
+  disable-all: true
+  enable:
+    # Correctness
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Code quality
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+
+    # Security
+    - gosec
+
+    # Style
+    - revive
+    - exhaustive
+
+linters-settings:
+  gosec:
+    excludes:
+      - G404  # weak random — acceptable for non-crypto use (sim data, IDs)
+
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - "checkPrivateReceivers"
+          - "sayRepetitiveInsteadOfStutters"
+
+  goimports:
+    local-prefixes: github.com/nexos-io/nexos
+
+  exhaustive:
+    default-signifies-exhaustive: true
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - gosec
+        - unparam
+
+  max-issues-per-linter: 50
+  max-same-issues: 10
+
+run:
+  timeout: 5m

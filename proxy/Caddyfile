@@ -1,0 +1,40 @@
+{
+	admin off
+	# Keep Caddy from auto-redirecting HTTP → HTTPS. We WANT http://localhost
+	# to serve normally so first-time developers don't bounce off a cert
+	# warning. Production users who front Nexos with a real domain can flip
+	# this back or remove the HTTP block entirely.
+	auto_https disable_redirects
+	log {
+		output stdout
+		format json
+	}
+}
+
+# Shared route map — reused by both the HTTP and HTTPS sites via a snippet.
+(nexos_routes) {
+	handle /api/* {
+		reverse_proxy ingestion:8080
+	}
+	# Caddy v2's reverse_proxy handles WebSocket upgrades transparently.
+	# Adding header_up directives breaks the Upgrade/Connection pass-through.
+	handle /ws {
+		reverse_proxy ingestion:8080
+	}
+	handle /health {
+		reverse_proxy ingestion:8080
+	}
+	handle {
+		reverse_proxy dashboard:3000
+	}
+}
+
+# ── HTTP — developer-friendly, no cert warning ──────────────────────────────
+:80 {
+	import nexos_routes
+}
+
+# ── HTTPS — production-style, self-signed cert from Caddy's local CA ────────
+localhost {
+	import nexos_routes
+}

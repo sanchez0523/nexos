@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import 'gridstack/dist/gridstack.min.css';
+
+/* Gridstack visual tweaks to match the Nexos palette. */
+.grid-stack-item-content {
+  @apply bg-panel border border-border rounded-xl overflow-hidden;
+}
+.grid-stack > .grid-stack-placeholder > .placeholder-content {
+  @apply border-dashed border-border rounded-xl;
+}
